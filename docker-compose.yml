@@ -1,58 +1,71 @@
 # Sobe tudo com: docker compose up --build
+name: ecommerce
 services:
 
-  # ---------- catalogo (Node + MongoDB) ----------
-  catalogo:
-    build: ./catalogo
-    ports:
-      - "3002:3002"
+  # ---------- usuarios (Node + Postgres) ----------
+  usuarios-db:
+    image: postgres:16-alpine
     environment:
-      PORT: 3002
-      MONGO_URL: mongodb://catalogo-db:27017
-      MONGO_DB: catalogo
-    depends_on:
-      catalogo-db:
-        condition: service_healthy
+      POSTGRES_DB: ${POSTGRES_DB:-usuarios_db}
+      POSTGRES_USER: ${POSTGRES_USER:-loja}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Crie o arquivo .env conforme .env.example}
+    volumes:
+      - usuarios_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
     restart: unless-stopped
 
+  usuarios:
+    build: ./usuarios
+    environment:
+      PORT: "3001"
+      PGHOST: usuarios-db
+      PGPORT: "5432"
+      PGDATABASE: ${POSTGRES_DB:-usuarios_db}
+      PGUSER: ${POSTGRES_USER:-loja}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Crie o arquivo .env conforme .env.example}
+      JWT_SECRET: ${JWT_SECRET:?Configure JWT_SECRET no arquivo .env}
+    ports:
+      - "3001:3001"
+    depends_on:
+      usuarios-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 4s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  # ---------- catalogo (Node + MongoDB) ----------
   catalogo-db:
     image: mongo:7
     volumes:
-      - catalogo-data:/data/db
+      - catalogo_mongo_data:/data/db
     healthcheck:
       test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
 
-  # ---------- usuarios (Node + Postgres) ----------
-  # Parte do colega. Quando a pasta ./usuarios existir, é só descomentar.
-  # usuarios:
-  #   build: ./usuarios
-  #   ports:
-  #     - "3001:3001"
-  #   environment:
-  #     PORT: 3001
-  #     DATABASE_URL: postgres://usuarios:usuarios@usuarios-db:5432/usuarios
-  #     JWT_SECRET: troque-este-segredo
-  #   depends_on:
-  #     usuarios-db:
-  #       condition: service_healthy
-  #
-  # usuarios-db:
-  #   image: postgres:16
-  #   environment:
-  #     POSTGRES_USER: usuarios
-  #     POSTGRES_PASSWORD: usuarios
-  #     POSTGRES_DB: usuarios
-  #   volumes:
-  #     - usuarios-data:/var/lib/postgresql/data
-  #   healthcheck:
-  #     test: ["CMD-SHELL", "pg_isready -U usuarios"]
-  #     interval: 5s
-  #     timeout: 5s
-  #     retries: 10
+  catalogo:
+    build: ./catalogo
+    environment:
+      PORT: "3002"
+      MONGO_URL: mongodb://catalogo-db:27017
+      MONGO_DB: catalogo
+    ports:
+      - "3002:3002"
+    depends_on:
+      catalogo-db:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
-  catalogo-data:
-  # usuarios-data:
+  usuarios_postgres_data:
+  catalogo_mongo_data:
