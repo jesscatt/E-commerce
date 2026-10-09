@@ -1,0 +1,44 @@
+# Etapa 1 do e-commerce: somente usuários + banco.
+# O serviço de catálogo da outra dupla pode ser acrescentado aqui posteriormente.
+name: ecommerce
+services:
+  usuarios-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-usuarios_db}
+      POSTGRES_USER: ${POSTGRES_USER:-loja}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Crie o arquivo .env conforme .env.example}
+    volumes:
+      - usuarios_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+
+  usuarios:
+    build: ./usuarios
+    environment:
+      PORT: "3001"
+      PGHOST: usuarios-db
+      PGPORT: "5432"
+      PGDATABASE: ${POSTGRES_DB:-usuarios_db}
+      PGUSER: ${POSTGRES_USER:-loja}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Crie o arquivo .env conforme .env.example}
+      JWT_SECRET: ${JWT_SECRET:?Configure JWT_SECRET no arquivo .env}
+    ports:
+      - "3001:3001"
+    depends_on:
+      usuarios-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 4s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+volumes:
+  usuarios_postgres_data:
