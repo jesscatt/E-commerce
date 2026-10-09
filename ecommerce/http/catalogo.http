@@ -1,0 +1,174 @@
+@catalogo = http://localhost:3002
+
+########################################
+# HEALTH
+########################################
+
+### Health: serviço e banco ok (200)
+GET {{catalogo}}/health
+
+
+########################################
+# CATEGORIAS
+########################################
+
+### Lista categorias (200)
+GET {{catalogo}}/categorias
+
+### Cria categoria (201)
+# Se rodar de novo, cai no 409 (slug já existe), que é o esperado.
+POST {{catalogo}}/categorias
+Content-Type: application/json
+
+{ "nome": "Eletrônicos", "slug": "eletronicos" }
+
+### ERRO 409: slug repetido
+POST {{catalogo}}/categorias
+Content-Type: application/json
+
+{ "nome": "Celulares de novo", "slug": "celulares" }
+
+### ERRO 400: categoria sem slug
+POST {{catalogo}}/categorias
+Content-Type: application/json
+
+{ "nome": "Sem slug" }
+
+
+########################################
+# PRODUTOS: LEITURA (público)
+########################################
+
+### Lista produtos ativos (200)
+# @name lista
+GET {{catalogo}}/produtos
+
+### Filtra por categoria (200)
+GET {{catalogo}}/produtos?categoria=livros
+
+### Filtra por categoria + busca no nome (200)
+GET {{catalogo}}/produtos?categoria=livros&busca=java
+
+### Busca sem categoria (200)
+GET {{catalogo}}/produtos?busca=smartphone
+
+### Busca um produto pelo id (200), usando o primeiro da lista
+GET {{catalogo}}/produtos/{{lista.response.body.$[0].id}}
+
+### ERRO 404: id que não existe
+GET {{catalogo}}/produtos/000000000000000000000000
+
+### ERRO 404: id mal formado
+GET {{catalogo}}/produtos/id-que-nao-existe
+
+
+########################################
+# PRODUTOS: ESCRITA (admin; aberta até o gateway entrar)
+########################################
+
+### Cria produto (201)
+# Se rodar de novo, cai no 409 (SKU já existe), que é o esperado.
+# @name criado
+POST {{catalogo}}/produtos
+Content-Type: application/json
+
+{
+  "sku": "LIV-200",
+  "nome": "Domain-Driven Design",
+  "categoria": "livros",
+  "preco": 159.9,
+  "atributos": { "autor": "Eric Evans", "paginas": 528 },
+  "estoque": { "disponivel": 7, "reservado": 0 }
+}
+
+### ERRO 409: SKU já existe
+POST {{catalogo}}/produtos
+Content-Type: application/json
+
+{
+  "sku": "CEL-001",
+  "nome": "Smartphone repetido",
+  "categoria": "celulares",
+  "preco": 999.9
+}
+
+### ERRO 400: preço negativo e sem SKU (devolve a lista de detalhes)
+POST {{catalogo}}/produtos
+Content-Type: application/json
+
+{
+  "nome": "Produto inválido",
+  "categoria": "roupas",
+  "preco": -10
+}
+
+### ERRO 400: categoria que não existe
+POST {{catalogo}}/produtos
+Content-Type: application/json
+
+{
+  "sku": "XYZ-001",
+  "nome": "Produto sem categoria válida",
+  "categoria": "brinquedos",
+  "preco": 10
+}
+
+### Substitui o produto inteiro (200)
+PUT {{catalogo}}/produtos/{{criado.response.body.$.id}}
+Content-Type: application/json
+
+{
+  "sku": "LIV-200",
+  "nome": "Domain-Driven Design (capa dura)",
+  "categoria": "livros",
+  "preco": 189.9,
+  "atributos": { "autor": "Eric Evans", "paginas": 528, "capa": "dura" },
+  "estoque": { "disponivel": 7, "reservado": 0 }
+}
+
+### ERRO 400: PUT incompleto (PUT substitui inteiro, então tudo é obrigatório)
+PUT {{catalogo}}/produtos/{{criado.response.body.$.id}}
+Content-Type: application/json
+
+{ "preco": 50 }
+
+### ERRO 404: PUT em produto que não existe
+PUT {{catalogo}}/produtos/000000000000000000000000
+Content-Type: application/json
+
+{
+  "sku": "NAO-001",
+  "nome": "Fantasma",
+  "categoria": "livros",
+  "preco": 10
+}
+
+### Ajusta só o estoque (200)
+PATCH {{catalogo}}/produtos/{{criado.response.body.$.id}}/estoque
+Content-Type: application/json
+
+{ "disponivel": 20 }
+
+### ERRO 400: estoque negativo
+PATCH {{catalogo}}/produtos/{{criado.response.body.$.id}}/estoque
+Content-Type: application/json
+
+{ "disponivel": -5 }
+
+### ERRO 404: estoque de produto que não existe
+PATCH {{catalogo}}/produtos/000000000000000000000000/estoque
+Content-Type: application/json
+
+{ "disponivel": 1 }
+
+### Desativa o produto (204): não apaga, só marca ativo = false
+DELETE {{catalogo}}/produtos/{{criado.response.body.$.id}}
+
+### Confere: o produto continua existindo, mas com ativo = false (200)
+GET {{catalogo}}/produtos/{{criado.response.body.$.id}}
+
+### Confere: ele some da listagem pública (200, sem LIV-200)
+GET {{catalogo}}/produtos?categoria=livros
+
+### ERRO 404: desativar produto que não existe
+DELETE {{catalogo}}/produtos/000000000000000000000000

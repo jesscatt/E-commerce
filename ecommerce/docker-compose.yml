@@ -1,0 +1,58 @@
+# Sobe tudo com: docker compose up --build
+services:
+
+  # ---------- catalogo (Node + MongoDB) ----------
+  catalogo:
+    build: ./catalogo
+    ports:
+      - "3002:3002"
+    environment:
+      PORT: 3002
+      MONGO_URL: mongodb://catalogo-db:27017
+      MONGO_DB: catalogo
+    depends_on:
+      catalogo-db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  catalogo-db:
+    image: mongo:7
+    volumes:
+      - catalogo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ---------- usuarios (Node + Postgres) ----------
+  # Parte do colega. Quando a pasta ./usuarios existir, é só descomentar.
+  # usuarios:
+  #   build: ./usuarios
+  #   ports:
+  #     - "3001:3001"
+  #   environment:
+  #     PORT: 3001
+  #     DATABASE_URL: postgres://usuarios:usuarios@usuarios-db:5432/usuarios
+  #     JWT_SECRET: troque-este-segredo
+  #   depends_on:
+  #     usuarios-db:
+  #       condition: service_healthy
+  #
+  # usuarios-db:
+  #   image: postgres:16
+  #   environment:
+  #     POSTGRES_USER: usuarios
+  #     POSTGRES_PASSWORD: usuarios
+  #     POSTGRES_DB: usuarios
+  #   volumes:
+  #     - usuarios-data:/var/lib/postgresql/data
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U usuarios"]
+  #     interval: 5s
+  #     timeout: 5s
+  #     retries: 10
+
+volumes:
+  catalogo-data:
+  # usuarios-data:
