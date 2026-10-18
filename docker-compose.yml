@@ -1,0 +1,141 @@
+# Sobe tudo com: docker compose up --build
+# A única porta da API é a 8080 (o gateway). Os serviços ficam só na rede interna do Docker.
+name: ecommerce
+services:
+
+  # ---------- gateway (Kong sem banco) ----------
+  gateway:
+    image: kong:3.9
+    ports:
+      - "8080:8000"             # a API da loja: a única porta para o cliente
+      - "127.0.0.1:8001:8001"   # Admin API (leitura), só na própria máquina
+      - "127.0.0.1:8002:8002"   # Kong Manager, só na própria máquina
+    volumes:
+      - ./kong:/kong:ro
+    # Troca __JWT_SECRET__ pelo valor real e sobe o Kong com o arquivo pronto.
+    entrypoint:
+      - sh
+      - -c
+      - sed "s|__JWT_SECRET__|$$JWT_SECRET|g" /kong/kong.yml > /tmp/kong.yml && exec /docker-entrypoint.sh kong docker-start
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /tmp/kong.yml
+      KONG_PROXY_LISTEN: 0.0.0.0:8000
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+      KONG_ADMIN_GUI_LISTEN: 0.0.0.0:8002
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      KONG_UNTRUSTED_LUA_SANDBOX_REQUIRES: kong.plugins.jwt.jwt_parser
+      JWT_SECRET: ${JWT_SECRET:?Configure JWT_SECRET no arquivo .env}
+    depends_on:
+      - usuarios
+      - catalogo
+      - pedidos
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ---------- usuarios (Node + Postgres) ----------
+  usuarios-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-usuarios_db}
+      POSTGRES_USER: ${POSTGRES_USER:-loja}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Crie o arquivo .env conforme .env.example}
+    volumes:
+      - usuarios_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+
+  usuarios:
+    build: ./usuarios
+    environment:
+      PORT: "3000"
+      PGHOST: usuarios-db
+      PGPORT: "5432"
+      PGDATABASE: ${POSTGRES_DB:-usuarios_db}
+      PGUSER: ${POSTGRES_USER:-loja}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Crie o arquivo .env conforme .env.example}
+      JWT_SECRET: ${JWT_SECRET:?Configure JWT_SECRET no arquivo .env}
+    # sem "ports": só o gateway alcança o serviço
+    depends_on:
+      usuarios-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 4s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  # ---------- catalogo (Node + MongoDB) ----------
+  catalogo-db:
+    image: mongo:7
+    volumes:
+      - catalogo_mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  catalogo:
+    build: ./catalogo
+    environment:
+      PORT: "3000"
+      MONGO_URL: mongodb://catalogo-db:27017
+      MONGO_DB: catalogo
+    # sem "ports": só o gateway (e o pedidos, pela rede interna) alcança o serviço
+    depends_on:
+      catalogo-db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ---------- pedidos (Node + Postgres) ----------
+  pedidos-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: pedidos_db
+      POSTGRES_USER: ${POSTGRES_USER:-loja}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Crie o arquivo .env conforme .env.example}
+    volumes:
+      - pedidos_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+
+  pedidos:
+    build: ./pedidos
+    environment:
+      PORT: "3000"
+      PGHOST: pedidos-db
+      PGPORT: "5432"
+      PGDATABASE: pedidos_db
+      PGUSER: ${POSTGRES_USER:-loja}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Crie o arquivo .env conforme .env.example}
+      CATALOGO_URL: http://catalogo:3000
+      CATALOGO_TIMEOUT_MS: "3000"
+    # sem "ports": só o gateway alcança o serviço
+    depends_on:
+      pedidos-db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  usuarios_postgres_data:
+  catalogo_mongo_data:
+  pedidos_postgres_data:

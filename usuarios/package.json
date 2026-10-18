@@ -1,0 +1,22 @@
+{
+  "name": "ecommerce-usuarios",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Microserviço de usuários - e-commerce de Arquitetura de Sistemas",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "db:setup": "node scripts/bootstrap.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "bcrypt": "6.0.0",
+    "dotenv": "16.4.7",
+    "express": "4.21.2",
+    "jsonwebtoken": "9.0.2",
+    "pg": "8.13.3"
+  }
+}

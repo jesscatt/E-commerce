@@ -1,0 +1,15 @@
+{
+  "name": "catalogo",
+  "version": "1.0.0",
+  "description": "Serviço de catálogo do e-commerce: produtos, categorias e estoque (MongoDB)",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node seeds/seed.js && node src/server.js",
+    "seed": "node seeds/seed.js",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "mongodb": "^6.12.0"
+  }
+}

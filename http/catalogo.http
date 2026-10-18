@@ -1,0 +1,221 @@
+# Instale a extensão REST Client no VS Code.
+# Execute de cima para baixo: algumas requisições usam a resposta das anteriores.
+# Uma URL só: a do gateway. O catálogo não tem mais porta publicada.
+@baseUrl = http://localhost:8080
+
+########################################
+# LOGINS (para as rotas de admin)
+########################################
+
+### Login do admin
+# @name loginAdmin
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{ "email": "admin@loja.com", "senha": "admin123" }
+
+### Login do cliente
+# @name loginCliente
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{ "email": "cliente@loja.com", "senha": "cliente123" }
+
+
+########################################
+# HEALTH
+########################################
+
+### Health pelo gateway: 200
+GET {{baseUrl}}/health/catalogo
+
+
+########################################
+# LEITURA (público: sem token)
+########################################
+
+### Lista categorias: 200
+GET {{baseUrl}}/categorias
+
+### Lista produtos ativos: 200
+# @name lista
+GET {{baseUrl}}/produtos
+
+### Filtra por categoria: 200
+GET {{baseUrl}}/produtos?categoria=livros
+
+### Filtra por categoria + busca no nome: 200
+GET {{baseUrl}}/produtos?categoria=livros&busca=java
+
+### Busca um produto pelo id: 200
+GET {{baseUrl}}/produtos/{{lista.response.body.$[0].id}}
+
+### Busca vários pelo id (é o que o pedidos usa no checkout): 200
+GET {{baseUrl}}/produtos?ids={{lista.response.body.$[0].id}},{{lista.response.body.$[1].id}}
+
+### ERRO 404: id que não existe
+GET {{baseUrl}}/produtos/000000000000000000000000
+
+
+########################################
+# ESCRITA: SEM PERMISSÃO (o Kong barra)
+########################################
+
+### ERRO 401: criar produto sem token
+POST {{baseUrl}}/produtos
+Content-Type: application/json
+
+{ "sku": "XYZ-401", "nome": "Sem token", "categoria": "livros", "preco": 10 }
+
+### ERRO 401: tentar se passar por admin só com o cabeçalho
+POST {{baseUrl}}/produtos
+Content-Type: application/json
+X-User-Role: admin
+
+{ "sku": "XYZ-401", "nome": "Cabeçalho falso", "categoria": "livros", "preco": 10 }
+
+### ERRO 403: cliente logado tentando criar produto
+POST {{baseUrl}}/produtos
+Content-Type: application/json
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+{ "sku": "XYZ-403", "nome": "Cliente não pode", "categoria": "livros", "preco": 10 }
+
+### ERRO 403: cliente tentando criar categoria
+POST {{baseUrl}}/categorias
+Content-Type: application/json
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+{ "nome": "Brinquedos", "slug": "brinquedos" }
+
+
+########################################
+# CATEGORIAS (admin)
+########################################
+
+### Cria categoria: 201
+# Na segunda vez que rodar, dá 409 (slug já existe), que é o esperado.
+POST {{baseUrl}}/categorias
+Content-Type: application/json
+Authorization: Bearer {{loginAdmin.response.body.$.token}}
+
+{ "nome": "Eletrônicos", "slug": "eletronicos" }
+
+### ERRO 409: slug repetido
+POST {{baseUrl}}/categorias
+Content-Type: application/json
+Authorization: Bearer {{loginAdmin.response.body.$.token}}
+
+{ "nome": "Celulares de novo", "slug": "celulares" }
+
+### ERRO 400: categoria sem slug
+POST {{baseUrl}}/categorias
+Content-Type: application/json
+Authorization: Bearer {{loginAdmin.response.body.$.token}}
+
+{ "nome": "Sem slug" }
+
+
+########################################
+# PRODUTOS (admin)
+########################################
+
+### Cria produto: 201
+# Na segunda vez que rodar, dá 409 (SKU já existe). Para repetir tudo: docker compose down -v
+# @name criado
+POST {{baseUrl}}/produtos
+Content-Type: application/json
+Authorization: Bearer {{loginAdmin.response.body.$.token}}
+
+{
+  "sku": "LIV-200",
+  "nome": "Domain-Driven Design",
+  "categoria": "livros",
+  "preco": 159.9,
+  "atributos": { "autor": "Eric Evans", "paginas": 528 },
+  "estoque": { "disponivel": 7, "reservado": 0 }
+}
+
+### ERRO 409: SKU já existe
+POST {{baseUrl}}/produtos
+Content-Type: application/json
+Authorization: Bearer {{loginAdmin.response.body.$.token}}
+
+{ "sku": "CEL-001", "nome": "Smartphone repetido", "categoria": "celulares", "preco": 999.9 }
+
+### ERRO 400: preço negativo e sem SKU
+POST {{baseUrl}}/produtos
+Content-Type: application/json
+Authorization: Bearer {{loginAdmin.response.body.$.token}}
+
+{ "nome": "Produto inválido", "categoria": "roupas", "preco": -10 }
+
+### ERRO 400: categoria que não existe
+POST {{baseUrl}}/produtos
+Content-Type: application/json
+Authorization: Bearer {{loginAdmin.response.body.$.token}}
+
+{ "sku": "XYZ-001", "nome": "Sem categoria válida", "categoria": "brinquedos", "preco": 10 }
+
+### Substitui o produto inteiro: 200
+PUT {{baseUrl}}/produtos/{{criado.response.body.$.id}}
+Content-Type: application/json
+Authorization: Bearer {{loginAdmin.response.body.$.token}}
+
+{
+  "sku": "LIV-200",
+  "nome": "Domain-Driven Design (capa dura)",
+  "categoria": "livros",
+  "preco": 189.9,
+  "atributos": { "autor": "Eric Evans", "paginas": 528, "capa": "dura" },
+  "estoque": { "disponivel": 7, "reservado": 0 }
+}
+
+### ERRO 400: PUT incompleto
+PUT {{baseUrl}}/produtos/{{criado.response.body.$.id}}
+Content-Type: application/json
+Authorization: Bearer {{loginAdmin.response.body.$.token}}
+
+{ "preco": 50 }
+
+### ERRO 404: PUT em produto que não existe
+PUT {{baseUrl}}/produtos/000000000000000000000000
+Content-Type: application/json
+Authorization: Bearer {{loginAdmin.response.body.$.token}}
+
+{ "sku": "NAO-001", "nome": "Fantasma", "categoria": "livros", "preco": 10 }
+
+### Ajusta só o estoque: 200
+PATCH {{baseUrl}}/produtos/{{criado.response.body.$.id}}/estoque
+Content-Type: application/json
+Authorization: Bearer {{loginAdmin.response.body.$.token}}
+
+{ "disponivel": 20 }
+
+### ERRO 400: estoque negativo
+PATCH {{baseUrl}}/produtos/{{criado.response.body.$.id}}/estoque
+Content-Type: application/json
+Authorization: Bearer {{loginAdmin.response.body.$.token}}
+
+{ "disponivel": -5 }
+
+### ERRO 403: cliente tentando mexer no estoque
+PATCH {{baseUrl}}/produtos/{{criado.response.body.$.id}}/estoque
+Content-Type: application/json
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+{ "disponivel": 999 }
+
+### Desativa o produto: 204 (não apaga, só marca ativo = false)
+DELETE {{baseUrl}}/produtos/{{criado.response.body.$.id}}
+Authorization: Bearer {{loginAdmin.response.body.$.token}}
+
+### Confere: continua existindo, com ativo = false (200)
+GET {{baseUrl}}/produtos/{{criado.response.body.$.id}}
+
+### Confere: some da listagem pública (200, sem LIV-200)
+GET {{baseUrl}}/produtos?categoria=livros
+
+### ERRO 404: desativar produto que não existe
+DELETE {{baseUrl}}/produtos/000000000000000000000000
+Authorization: Bearer {{loginAdmin.response.body.$.token}}

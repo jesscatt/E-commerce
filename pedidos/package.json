@@ -1,0 +1,16 @@
+{
+  "name": "ecommerce-pedidos",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Microserviço de pedidos (carrinho e checkout) - e-commerce de Arquitetura de Sistemas",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node scripts/bootstrap.js && node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "express": "4.21.2",
+    "pg": "8.13.3"
+  }
+}

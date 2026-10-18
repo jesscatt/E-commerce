@@ -1,0 +1,162 @@
+# Kong sem banco (modo declarativo): toda a configuração do gateway está aqui.
+# Mudou este arquivo? docker compose restart gateway
+#
+# Três tipos de rota, três receitas:
+#   publico -> nenhum plugin de acesso
+#   logado  -> jwt (401 sem token ou token inválido)
+#   admin   -> jwt + acl allow [admin] (401 sem token, 403 se o perfil não for admin)
+#
+# __JWT_SECRET__ é trocado pelo valor da variável JWT_SECRET quando o container sobe
+# (veja o entrypoint do serviço gateway no docker-compose.yml).
+
+_format_version: "3.0"
+
+services:
+
+  # ---------------------------------------------------------------- usuarios
+  - name: usuarios
+    url: http://usuarios:3000
+    routes:
+      - name: login
+        methods: [POST]
+        paths: ["~/auth/login$"]
+        strip_path: false
+        tags: [publico]
+        plugins:
+          # contra força bruta: a 11ª tentativa no minuto, pelo mesmo IP, recebe 429
+          - name: rate-limiting
+            config: { minute: 10, limit_by: ip, policy: local }
+
+      - name: cadastro
+        methods: [POST]
+        paths: ["~/usuarios$"]
+        strip_path: false
+        tags: [publico]
+
+      - name: listar-usuarios
+        methods: [GET]
+        paths: ["~/usuarios$"]
+        strip_path: false
+        tags: [admin]
+        plugins: &so-admin
+          - &jwt
+            name: jwt
+            config:
+              key_claim_name: perfil
+              claims_to_verify: [exp]
+          - name: acl
+            config: { allow: [admin] }
+
+      - name: meus-dados
+        methods: [GET, PUT, POST, DELETE]
+        paths: ["~/usuarios/me(/.*)?$"]
+        strip_path: false
+        tags: [logado]
+        plugins: &logado [*jwt]
+
+      - name: health-usuarios
+        methods: [GET]
+        paths: ["~/health/usuarios$"]
+        strip_path: false
+        tags: [publico]
+        plugins:
+          - name: request-transformer
+            config: { replace: { uri: /health } }
+
+  # ---------------------------------------------------------------- catalogo
+  - name: catalogo
+    url: http://catalogo:3000
+    routes:
+      - name: vitrine
+        methods: [GET]
+        paths: ["~/(produtos|categorias)(/.*)?$"]
+        strip_path: false
+        tags: [publico]
+
+      - name: gestao-catalogo
+        methods: [POST, PUT, PATCH, DELETE]
+        paths: ["~/(produtos|categorias)(/.*)?$"]
+        strip_path: false
+        tags: [admin]
+        plugins: *so-admin
+
+      - name: health-catalogo
+        methods: [GET]
+        paths: ["~/health/catalogo$"]
+        strip_path: false
+        tags: [publico]
+        plugins:
+          - name: request-transformer
+            config: { replace: { uri: /health } }
+
+  # ---------------------------------------------------------------- pedidos
+  - name: pedidos
+    url: http://pedidos:3000
+    routes:
+      - name: carrinho-e-pedidos
+        methods: [GET, POST, DELETE]
+        paths: ["~/(carrinho|pedidos)(/.*)?$"]
+        strip_path: false
+        tags: [logado]
+        plugins: *logado
+
+      - name: health-pedidos
+        methods: [GET]
+        paths: ["~/health/pedidos$"]
+        strip_path: false
+        tags: [publico]
+        plugins:
+          - name: request-transformer
+            config: { replace: { uri: /health } }
+
+# Os consumers são perfis, não pessoas. O plugin jwt acha o consumer pelo campo
+# "perfil" do token (key_claim_name: perfil): token de perfil "cliente" cai no
+# consumer cliente. Perfil inventado (ex.: "superadmin") não tem consumer -> 401.
+consumers:
+  - username: cliente
+    jwt_secrets:
+      - { key: cliente, algorithm: HS256, secret: "__JWT_SECRET__" }
+    acls: [{ group: cliente }]
+
+  - username: admin
+    jwt_secrets:
+      - { key: admin, algorithm: HS256, secret: "__JWT_SECRET__" }
+    acls: [{ group: admin }]
+
+# Plugins globais: valem para todas as rotas.
+plugins:
+  # Dá um X-Request-Id a cada requisição (inclusive às recusadas) e devolve ao cliente.
+  - name: correlation-id
+    config: { header_name: X-Request-Id, generator: uuid, echo_downstream: true }
+
+  # Antes de tudo: apaga os X-User-* que vieram de fora. Ninguém escolhe quem é.
+  - name: pre-function
+    config:
+      access:
+        - |
+          kong.service.request.clear_header("X-User-Id")
+          kong.service.request.clear_header("X-User-Email")
+          kong.service.request.clear_header("X-User-Role")
+
+  # Depois do jwt e do acl: copia id, e-mail e perfil do token para os cabeçalhos
+  # que os serviços leem. Só age quando o jwt autenticou alguém (rota logado/admin);
+  # nas rotas públicas nada é preenchido, mesmo que o cliente mande um token.
+  # A decisão de acesso não está aqui: quem decide é o jwt (401) e o acl (403).
+  - name: post-function
+    config:
+      access:
+        - |
+          if not kong.client.get_consumer() then return end
+          local token = kong.ctx.shared.authenticated_jwt_token
+          if not token then
+            local auth = kong.request.get_header("authorization") or ""
+            token = auth:match("^[Bb]earer%s+(%S+)$")
+          end
+          if not token then return end
+          local jwt_parser = require "kong.plugins.jwt.jwt_parser"
+          local jwt = jwt_parser:new(token)
+          if not jwt then return end
+          local claims = jwt.claims
+          kong.service.request.set_header("X-User-Id", tostring(claims.sub))
+          kong.service.request.set_header("X-User-Email", tostring(claims.email))
+          kong.service.request.set_header("X-User-Role", tostring(claims.perfil))

@@ -1,0 +1,214 @@
+# Instale a extensão REST Client no VS Code.
+# Fluxo: login -> adicionar ao carrinho -> ver carrinho -> checkout (202) -> consultar o pedido.
+# Execute de cima para baixo: as requisições usam as respostas das anteriores.
+@baseUrl = http://localhost:8080
+
+########################################
+# PREPARAÇÃO
+########################################
+
+### Health pelo gateway: 200
+GET {{baseUrl}}/health/pedidos
+
+### Login do cliente
+# @name loginCliente
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{ "email": "cliente@loja.com", "senha": "cliente123" }
+
+### Login do admin (usado como "outra pessoa" no teste de pedido alheio)
+# @name loginAdmin
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{ "email": "admin@loja.com", "senha": "admin123" }
+
+### Pega dois livros do catálogo (público)
+# @name livros
+GET {{baseUrl}}/produtos?categoria=livros
+
+
+########################################
+# SEM LOGIN
+########################################
+
+### ERRO 401: carrinho sem token
+GET {{baseUrl}}/carrinho
+
+### ERRO 401: tentar se passar por alguém com X-User-Id
+GET {{baseUrl}}/pedidos
+X-User-Id: 00000000-0000-0000-0000-000000000000
+X-User-Email: hacker@loja.com
+
+
+########################################
+# CARRINHO VAZIO
+########################################
+
+### ERRO 400: checkout com o carrinho vazio
+# Se o carrinho já tiver itens de um teste anterior, rode antes os DELETEs lá de baixo.
+POST {{baseUrl}}/pedidos
+Content-Type: application/json
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+{
+  "endereco_entrega": { "cep": "97000-000", "logradouro": "Rua Exemplo", "numero": "100", "cidade": "Santa Maria", "uf": "RS" },
+  "forma_pagamento": "pix"
+}
+
+
+########################################
+# CARRINHO
+########################################
+
+### Adiciona o primeiro livro (2 unidades): 201
+POST {{baseUrl}}/carrinho/itens
+Content-Type: application/json
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+{ "produto_id": "{{livros.response.body.$[0].id}}", "quantidade": 2 }
+
+### Adiciona o segundo livro (quantidade padrão 1): 201
+POST {{baseUrl}}/carrinho/itens
+Content-Type: application/json
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+{ "produto_id": "{{livros.response.body.$[1].id}}" }
+
+### ERRO 400: quantidade inválida
+POST {{baseUrl}}/carrinho/itens
+Content-Type: application/json
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+{ "produto_id": "{{livros.response.body.$[0].id}}", "quantidade": 0 }
+
+### ERRO 404: produto que não existe
+POST {{baseUrl}}/carrinho/itens
+Content-Type: application/json
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+{ "produto_id": "000000000000000000000000", "quantidade": 1 }
+
+### Ver carrinho: 200 { itens, total } com os preços atuais do catálogo
+GET {{baseUrl}}/carrinho
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+### ERRO 404: remover algo que não está no carrinho
+DELETE {{baseUrl}}/carrinho/itens/000000000000000000000000
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+
+########################################
+# CHECKOUT
+########################################
+
+### ERRO 400: checkout sem endereço e com forma de pagamento inválida
+POST {{baseUrl}}/pedidos
+Content-Type: application/json
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+{ "forma_pagamento": "cheque" }
+
+### Checkout com cartão: 202 (pedido aceito, status AGUARDANDO_ESTOQUE)
+# Só os 4 últimos dígitos do cartão são gravados.
+# @name checkout
+POST {{baseUrl}}/pedidos
+Content-Type: application/json
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+{
+  "endereco_entrega": { "cep": "97000-000", "logradouro": "Rua Exemplo", "numero": "100", "cidade": "Santa Maria", "uf": "RS" },
+  "forma_pagamento": "cartao",
+  "numero_cartao": "4111 1111 1111 1234"
+}
+
+### Carrinho ficou vazio depois do checkout: 200 { itens: [], total: 0 }
+GET {{baseUrl}}/carrinho
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+
+########################################
+# MEUS PEDIDOS
+########################################
+
+### Lista meus pedidos: 200
+GET {{baseUrl}}/pedidos
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+### Consulta o pedido com os itens: 200
+GET {{baseUrl}}/pedidos/{{checkout.response.body.$.id}}
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+### ERRO 404: outra pessoa (o admin) tentando ver o pedido do cliente
+# 404 e não 403: um 403 confirmaria que o pedido existe.
+GET {{baseUrl}}/pedidos/{{checkout.response.body.$.id}}
+Authorization: Bearer {{loginAdmin.response.body.$.token}}
+
+### ERRO 404: pedido que não existe
+GET {{baseUrl}}/pedidos/00000000-0000-0000-0000-000000000000
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+### Cancela o pedido: 200 (status CANCELADO)
+POST {{baseUrl}}/pedidos/{{checkout.response.body.$.id}}/cancelar
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+### ERRO 409: cancelar de novo (status não permite)
+POST {{baseUrl}}/pedidos/{{checkout.response.body.$.id}}/cancelar
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+
+########################################
+# PRODUTO INDISPONÍVEL (409)
+########################################
+
+### Põe 99 unidades de um livro no carrinho (mais do que o estoque)
+POST {{baseUrl}}/carrinho/itens
+Content-Type: application/json
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+{ "produto_id": "{{livros.response.body.$[0].id}}", "quantidade": 99 }
+
+### ERRO 409: checkout com estoque insuficiente
+POST {{baseUrl}}/pedidos
+Content-Type: application/json
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+{
+  "endereco_entrega": { "cep": "97000-000", "logradouro": "Rua Exemplo", "cidade": "Santa Maria", "uf": "RS" },
+  "forma_pagamento": "pix"
+}
+
+
+########################################
+# CATÁLOGO FORA (503)
+########################################
+# No terminal:  docker compose stop catalogo
+# Rode as duas requisições abaixo e depois:  docker compose start catalogo
+
+### Com o catálogo fora, o carrinho continua funcionando: 200 (sem preços, com aviso)
+GET {{baseUrl}}/carrinho
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+### ERRO 503: checkout com o catálogo fora
+POST {{baseUrl}}/pedidos
+Content-Type: application/json
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+{
+  "endereco_entrega": { "cep": "97000-000", "logradouro": "Rua Exemplo", "cidade": "Santa Maria", "uf": "RS" },
+  "forma_pagamento": "pix"
+}
+
+
+########################################
+# LIMPEZA (deixa o carrinho vazio para rodar tudo de novo)
+########################################
+
+### Remove o primeiro livro do carrinho: 204
+DELETE {{baseUrl}}/carrinho/itens/{{livros.response.body.$[0].id}}
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+### Remove o segundo livro do carrinho: 204 (ou 404 se já não estiver lá)
+DELETE {{baseUrl}}/carrinho/itens/{{livros.response.body.$[1].id}}
+Authorization: Bearer {{loginCliente.response.body.$.token}}
