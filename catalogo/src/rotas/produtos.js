@@ -14,7 +14,7 @@ const categorias = () => getDb().collection('categorias');
 
 // Devolve "id" em vez de "_id" para quem consome a API.
 function formatar(doc) {
-  const { _id, ...resto } = doc;
+  const { _id, reservasAplicadas, ...resto } = doc;
   return { id: _id.toString(), ...resto };
 }
 
@@ -107,6 +107,7 @@ router.put('/:id', rota(async (req, res) => {
   await garantirCategoriaExiste(substituto.categoria);
   substituto.criado_em = atual.criado_em;
   substituto.atualizado_em = new Date();
+  if (atual.reservasAplicadas) substituto.reservasAplicadas = atual.reservasAplicadas;
 
   try {
     await produtos().replaceOne({ _id }, substituto);

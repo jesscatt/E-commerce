@@ -62,7 +62,7 @@ test('montarPedido copia nome e preço e soma em centavos', () => {
   assert.equal(itens[0].preco_unitario, 0.1);
 });
 
-test('montarPedido aponta produto sumido, inativo e sem estoque', () => {
+test('montarPedido rejeita sumido/inativo e deixa a reserva decidir a falta de estoque', () => {
   const produtos = new Map([
     ['inativo', produto('inativo', { ativo: false })],
     ['pouco', produto('pouco', { estoque: { disponivel: 1, reservado: 0 } })],
@@ -72,8 +72,9 @@ test('montarPedido aponta produto sumido, inativo e sem estoque', () => {
     { produto_id: 'inativo', quantidade: 1 },
     { produto_id: 'pouco', quantidade: 2 },
   ], produtos);
-  assert.equal(itens.length, 0);
-  assert.equal(indisponiveis.length, 3);
+  assert.equal(itens.length, 1);
+  assert.equal(itens[0].produto_id, 'pouco');
+  assert.equal(indisponiveis.length, 2);
 });
 
 test('montarCarrinho calcula subtotal e marca o que não tem estoque', () => {

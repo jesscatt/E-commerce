@@ -1,5 +1,6 @@
 const express = require('express');
-const { conectar, criarIndices, getDb } = require('./db');
+const { conectar, criarIndices, getDb, fechar } = require('./db');
+const eventos = require('./eventos');
 const { tratadorDeErros } = require('./erros');
 const rotasProdutos = require('./rotas/produtos');
 const rotasCategorias = require('./rotas/categorias');
@@ -42,7 +43,15 @@ app.use(tratadorDeErros);
 async function iniciar() {
   await conectar();
   await criarIndices();
-  app.listen(PORT, () => console.log(`catalogo ouvindo na porta ${PORT}`));
+  await eventos.iniciar();
+  const servidor = app.listen(PORT, () => console.log(`catalogo ouvindo na porta ${PORT}`));
+  const encerrar = () => servidor.close(async () => {
+    await eventos.fechar();
+    await fechar();
+    process.exit(0);
+  });
+  process.once('SIGTERM', encerrar);
+  process.once('SIGINT', encerrar);
 }
 
 iniciar().catch((err) => {

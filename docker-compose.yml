@@ -30,9 +30,12 @@ services:
       KONG_UNTRUSTED_LUA_SANDBOX_REQUIRES: kong.plugins.jwt.jwt_parser
       JWT_SECRET: ${JWT_SECRET:?Configure JWT_SECRET no arquivo .env}
     depends_on:
-      - usuarios
-      - catalogo
-      - pedidos
+      usuarios:
+        condition: service_healthy
+      catalogo:
+        condition: service_healthy
+      pedidos:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "kong", "health"]
       interval: 10s
@@ -96,10 +99,20 @@ services:
       PORT: "3000"
       MONGO_URL: mongodb://catalogo-db:27017
       MONGO_DB: catalogo
+      KAFKA_BROKERS: kafka:9092
     # sem "ports": só o gateway (e o pedidos, pela rede interna) alcança o serviço
     depends_on:
       catalogo-db:
         condition: service_healthy
+      kafka:
+        condition: service_healthy
+    stop_grace_period: 15s
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
     restart: unless-stopped
 
   # ---------- pedidos (Node + Postgres) ----------
@@ -129,13 +142,103 @@ services:
       PGPASSWORD: ${POSTGRES_PASSWORD:?Crie o arquivo .env conforme .env.example}
       CATALOGO_URL: http://catalogo:3000
       CATALOGO_TIMEOUT_MS: "3000"
+      KAFKA_BROKERS: kafka:9092
     # sem "ports": só o gateway alcança o serviço
     depends_on:
       pedidos-db:
         condition: service_healthy
+      kafka:
+        condition: service_healthy
+    stop_grace_period: 15s
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  kafka-storage:
+    image: apache/kafka:3.8.0
+    user: "0:0"
+    entrypoint: ["sh", "-c"]
+    command: ["chown 1000:1000 /data"]
+    volumes:
+      - kafka_data:/data
+    restart: "no"
+
+  kafka:
+    image: apache/kafka:3.8.0
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    volumes:
+      - kafka_data:/tmp/kraft-combined-logs
+    depends_on:
+      kafka-storage:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 20s
+    restart: unless-stopped
+
+  kafka-ui:
+    image: ghcr.io/kafbat/kafka-ui:v1.1.0
+    ports:
+      - "127.0.0.1:8090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: ecommerce
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports:
+      - "127.0.0.1:8025:8025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  notificacoes:
+    build: ./notificacoes
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+    volumes:
+      - notificacoes_data:/data
+    depends_on:
+      kafka:
+        condition: service_healthy
+      mailpit:
+        condition: service_healthy
+    stop_grace_period: 15s
     restart: unless-stopped
 
 volumes:
   usuarios_postgres_data:
   catalogo_mongo_data:
   pedidos_postgres_data:
+  kafka_data:
+  notificacoes_data:

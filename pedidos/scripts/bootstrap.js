@@ -20,8 +20,10 @@ async function conectarComTentativas() {
 async function iniciar() {
   const cliente = await conectarComTentativas();
   try {
-    const sql = fs.readFileSync(path.join(__dirname, '../migrations/001_inicial.sql'), 'utf8');
-    await cliente.query(sql);
+    const diretorio = path.join(__dirname, '../migrations');
+    for (const arquivo of fs.readdirSync(diretorio).filter((nome) => nome.endsWith('.sql')).sort()) {
+      await cliente.query(fs.readFileSync(path.join(diretorio, arquivo), 'utf8'));
+    }
     console.log('Tabelas do pedidos preparadas.');
   } finally {
     cliente.release();
