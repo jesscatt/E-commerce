@@ -136,7 +136,7 @@ Authorization: Bearer {{loginCliente.response.body.$.token}}
 GET {{baseUrl}}/pedidos
 Authorization: Bearer {{loginCliente.response.body.$.token}}
 
-### Consulta o pedido com os itens: 200
+### Reenvie até AGUARDANDO_PAGAMENTO: 200 (reserva por evento)
 GET {{baseUrl}}/pedidos/{{checkout.response.body.$.id}}
 Authorization: Bearer {{loginCliente.response.body.$.token}}
 
@@ -150,6 +150,7 @@ GET {{baseUrl}}/pedidos/00000000-0000-0000-0000-000000000000
 Authorization: Bearer {{loginCliente.response.body.$.token}}
 
 ### Cancela o pedido: 200 (status CANCELADO)
+# Nesta aula o cancelamento manual ainda não devolve estoque; saga vem depois.
 POST {{baseUrl}}/pedidos/{{checkout.response.body.$.id}}/cancelar
 Authorization: Bearer {{loginCliente.response.body.$.token}}
 
@@ -159,7 +160,7 @@ Authorization: Bearer {{loginCliente.response.body.$.token}}
 
 
 ########################################
-# PRODUTO INDISPONÍVEL (409)
+# ESTOQUE INSUFICIENTE (202 → CANCELADO)
 ########################################
 
 ### Põe 99 unidades de um livro no carrinho (mais do que o estoque)
@@ -169,7 +170,8 @@ Authorization: Bearer {{loginCliente.response.body.$.token}}
 
 { "produto_id": "{{livros.response.body.$[0].id}}", "quantidade": 99 }
 
-### ERRO 409: checkout com estoque insuficiente
+### Aceito: 202; o catálogo recusará a reserva por evento
+# @name semEstoque
 POST {{baseUrl}}/pedidos
 Content-Type: application/json
 Authorization: Bearer {{loginCliente.response.body.$.token}}
@@ -180,11 +182,28 @@ Authorization: Bearer {{loginCliente.response.body.$.token}}
 }
 
 
+### Reenvie até retornar CANCELADO e motivo_cancelamento
+GET {{baseUrl}}/pedidos/{{semEstoque.response.body.$.id}}
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+# Mailpit (porta 8025): pedido recebido e cancelamento por estoque insuficiente.
+# Kafka UI (porta 8090): tópicos pedidos/estoque, chave = id do pedido.
+# Antes de testar o catálogo fora, adicione novamente um item ao carrinho.
+# O checkout anterior consumiu o carrinho, mesmo quando a reserva falhou.
+
 ########################################
 # CATÁLOGO FORA (503)
 ########################################
-# No terminal:  docker compose stop catalogo
-# Rode as duas requisições abaixo e depois:  docker compose start catalogo
+
+### Prepare um carrinho novo ANTES de parar o catálogo
+POST {{baseUrl}}/carrinho/itens
+Content-Type: application/json
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+{ "produto_id": "{{livros.response.body.$[0].id}}", "quantidade": 1 }
+
+# Agora, no terminal: docker compose stop catalogo
+# Rode as duas requisições abaixo e depois: docker compose start catalogo
 
 ### Com o catálogo fora, o carrinho continua funcionando: 200 (sem preços, com aviso)
 GET {{baseUrl}}/carrinho

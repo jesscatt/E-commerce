@@ -77,7 +77,7 @@ function validarCheckout(body) {
 
 // Junta o carrinho com os produtos que o catálogo devolveu.
 // Devolve os itens com preço e nome do momento da compra, o total e a lista do que
-// não pode ser vendido (não existe, foi desativado ou não tem estoque suficiente).
+// não pode ser vendido (não existe ou foi desativado). Estoque é reservado por evento.
 function montarPedido(carrinho, produtos) {
   const itens = [];
   const indisponiveis = [];
@@ -93,11 +93,7 @@ function montarPedido(carrinho, produtos) {
       indisponiveis.push(`${p.nome} não está mais à venda`);
       continue;
     }
-    const disponivel = p.estoque?.disponivel ?? 0;
-    if (disponivel < quantidade) {
-      indisponiveis.push(`${p.nome}: pedido ${quantidade}, disponível ${disponivel}`);
-      continue;
-    }
+    // O preço é síncrono; disponibilidade é decidida na reserva por evento.
     const precoCentavos = emCentavos(p.preco);
     totalCentavos += precoCentavos * quantidade;
     itens.push({

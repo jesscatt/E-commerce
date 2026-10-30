@@ -3,7 +3,7 @@ const { pool } = require('../db');
 const { erros } = require('../erros');
 const { buscarProdutos } = require('../catalogo');
 const { validarCheckout, montarPedido, uuidValido, podeCancelar } = require('../regras');
-const { itensDoCarrinho } = require('./carrinho');
+const { publicarPedido } = require('../eventos');
 
 const router = express.Router();
 const rota = (fn) => (req, res, next) => fn(req, res, next).catch(next);
@@ -11,7 +11,7 @@ const rota = (fn) => (req, res, next) => fn(req, res, next).catch(next);
 // Um pedido com os seus itens, numa consulta só.
 const SELECT_PEDIDO = `
   SELECT p.id, p.status, p.valor_total::float AS valor_total, p.endereco_entrega,
-         p.forma_pagamento, p.cartao_final, p.criado_em,
+         p.forma_pagamento, p.cartao_final, p.criado_em, p.motivo_cancelamento,
          COALESCE(
            json_agg(json_build_object(
              'produto_id', i.produto_id,
@@ -38,18 +38,26 @@ router.post('/', rota(async (req, res) => {
   const { erros: detalhes, valor } = validarCheckout(req.body);
   if (detalhes.length) throw erros.dadosInvalidos(detalhes);
 
-  const carrinho = await itensDoCarrinho(req.usuario.id);
-  if (!carrinho.length) throw erros.dadosInvalidos(['o carrinho está vazio']);
-
-  // Chamada síncrona: o preço vale o do catálogo NESTE instante. Catálogo fora -> 503.
-  const produtos = await buscarProdutos(carrinho.map((i) => i.produto_id), req.get('x-request-id'));
-  const { itens, total, indisponiveis } = montarPedido(carrinho, produtos);
-  if (indisponiveis.length) throw erros.conflito('Produto indisponível.', indisponiveis);
-
   const cliente = await pool.connect();
   let pedidoId;
   try {
     await cliente.query('BEGIN');
+    // Bloqueia os itens até o COMMIT/ROLLBACK. Outro checkout do mesmo carrinho
+    // aguarda e, depois do consumo, encontra o carrinho vazio (400).
+    // Adições ao mesmo produto também aguardam e ficam no carrinho após a compra.
+    const { rows: carrinho } = await cliente.query(
+      `SELECT produto_id, quantidade FROM carrinho_itens
+       WHERE usuario_id = $1 ORDER BY produto_id FOR UPDATE`,
+      [req.usuario.id]
+    );
+    if (!carrinho.length) throw erros.dadosInvalidos(['o carrinho está vazio']);
+
+    // Chamada interna limitada pelo timeout do catálogo; em falha, o rollback
+    // preserva o carrinho e libera os bloqueios antes de responder 503.
+    const produtos = await buscarProdutos(carrinho.map((i) => i.produto_id), req.get('x-request-id'));
+    const { itens, total, indisponiveis } = montarPedido(carrinho, produtos);
+    if (indisponiveis.length) throw erros.conflito('Produto indisponível.', indisponiveis);
+
     const { rows } = await cliente.query(
       `INSERT INTO pedidos (usuario_id, cliente_email, status, valor_total, endereco_entrega, forma_pagamento, cartao_final)
        VALUES ($1, $2, 'AGUARDANDO_ESTOQUE', $3, $4, $5, $6)
@@ -80,8 +88,17 @@ router.post('/', rota(async (req, res) => {
   }
 
   // 202 e não 201: o pedido foi aceito, mas ainda não terminou (falta reservar o estoque
-  // e cobrar). Ele fica em AGUARDANDO_ESTOQUE até o Kafka fazê-lo andar, na próxima aula.
+  // e cobrar). O catálogo reagirá ao evento de forma assíncrona.
   const pedido = await buscarPedido(pedidoId, req.usuario.id);
+  try {
+    await publicarPedido(pedido, req.usuario, req.get('x-request-id'));
+  } catch (erro) {
+    // O COMMIT já aconteceu. Não simula rollback nem pede para repetir a compra.
+    console.error(`Publicação pendente pedido=${pedidoId} correlationId=${req.get('x-request-id') || '-'}: ${erro.message}`);
+    return res.status(503).location(`/pedidos/${pedidoId}`).json({
+      erro: 'Pedido salvo, mas a publicação falhou. Consulte este pedido; não repita o checkout.', pedido,
+    });
+  }
   res.status(202).location(`/pedidos/${pedidoId}`).json(pedido);
 }));
 
