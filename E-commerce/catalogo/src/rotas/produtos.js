@@ -117,7 +117,11 @@ router.put('/:id', rota(async (req, res) => {
   await garantirCategoriaExiste(substituto.categoria);
   substituto.criado_em = atual.criado_em;
   substituto.atualizado_em = new Date();
+  // O estoque não muda pelo PUT: ele é da saga (reservas em andamento) e do PATCH /estoque.
+  // Sobrescrever aqui zeraria o "reservado" de pedidos ainda em pagamento.
+  substituto.estoque = atual.estoque;
   if (atual.reservasAplicadas) substituto.reservasAplicadas = atual.reservasAplicadas;
+  if (atual.devolucoesAplicadas) substituto.devolucoesAplicadas = atual.devolucoesAplicadas;
 
   try {
     await produtos().replaceOne({ _id }, substituto);
