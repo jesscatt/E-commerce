@@ -1,0 +1,282 @@
+# DEMOS DE RESILIÊNCIA: o banco do cartão instável, fora do ar e lento.
+# O banco-falso é chamado DIRETO em localhost:9000 (fora do Kong): ele é um sistema externo.
+# Acompanhe os logs num terminal enquanto roda:
+#   docker compose logs -f pagamentos banco-falso | grep -E "tentativa|CIRCUITO|circuito|ESTORNO|pagamento"
+@baseUrl = http://localhost:8080
+@banco = http://localhost:9000
+@endereco = { "cep": "97000-000", "logradouro": "Rua Exemplo", "numero": "100", "cidade": "Santa Maria", "uf": "RS" }
+
+########################################
+# PREPARAÇÃO
+########################################
+
+### Como o banco está agora
+GET {{banco}}/config
+
+### Login do cliente
+# @name loginCliente
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{ "email": "cliente@loja.com", "senha": "cliente123" }
+
+### Uma camiseta do catálogo (muito estoque)
+# @name roupas
+GET {{baseUrl}}/produtos?categoria=roupas
+
+
+########################################
+# A. BANCO INSTÁVEL: 30% de falha -> o retry resolve
+########################################
+
+### 30% das cobranças respondem 503
+POST {{banco}}/config
+Content-Type: application/json
+
+{ "falhaPercent": 30 }
+
+### Carrinho: 201
+POST {{baseUrl}}/carrinho/itens
+Content-Type: application/json
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+{ "produto_id": "{{roupas.response.body.$[0].id}}", "quantidade": 1 }
+
+### Checkout: 202
+# @name instavel
+POST {{baseUrl}}/pedidos
+Content-Type: application/json
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+{ "endereco_entrega": {{endereco}}, "forma_pagamento": "pix" }
+
+### Pagamento: APROVADO quase sempre; "tentativas" pode ser 2 ou 3 (repita o bloco A para ver)
+GET {{baseUrl}}/pagamentos/{{instavel.response.body.$.id}}
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+
+########################################
+# B. BANCO FORA: 100% de falha -> o circuito abre
+########################################
+# Cada compra faz 3 tentativas. Com 5 falhas na janela de 30 s, o opossum abre o circuito.
+# Faça as DUAS compras abaixo em seguida.
+
+### Toda cobrança responde 503
+POST {{banco}}/config
+Content-Type: application/json
+
+{ "falhaPercent": 100 }
+
+### Compra 1: carrinho
+POST {{baseUrl}}/carrinho/itens
+Content-Type: application/json
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+{ "produto_id": "{{roupas.response.body.$[0].id}}", "quantidade": 1 }
+
+### Compra 1: checkout
+# @name fora1
+POST {{baseUrl}}/pedidos
+Content-Type: application/json
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+{ "endereco_entrega": {{endereco}}, "forma_pagamento": "pix" }
+
+### Compra 2: carrinho
+POST {{baseUrl}}/carrinho/itens
+Content-Type: application/json
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+{ "produto_id": "{{roupas.response.body.$[0].id}}", "quantidade": 1 }
+
+### Compra 2: checkout
+# @name fora2
+POST {{baseUrl}}/pedidos
+Content-Type: application/json
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+{ "endereco_entrega": {{endereco}}, "forma_pagamento": "pix" }
+
+### Health: status "degradado" (200), "circuitoBancoCartao": "ABERTO" (e o log mostra CIRCUITO ABERTO)
+GET {{baseUrl}}/health/pagamentos
+
+### Pagamento da compra 1: ERRO, 3 tentativas, motivo "banco indisponível (banco respondeu 503)"
+GET {{baseUrl}}/pagamentos/{{fora1.response.body.$.id}}
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+### Pedido da compra 1: CANCELADO (fallback: banco fora cancela o pedido e devolve o estoque)
+GET {{baseUrl}}/pedidos/{{fora1.response.body.$.id}}
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+### Compra 3 com o circuito ABERTO: carrinho
+POST {{baseUrl}}/carrinho/itens
+Content-Type: application/json
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+{ "produto_id": "{{roupas.response.body.$[0].id}}", "quantidade": 1 }
+
+### Compra 3: checkout
+# @name fora3
+POST {{baseUrl}}/pedidos
+Content-Type: application/json
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+{ "endereco_entrega": {{endereco}}, "forma_pagamento": "pix" }
+
+### Pagamento da compra 3: ERRO na hora, tentativas 0, motivo "banco indisponível (circuito aberto)"
+# O banco nem foi chamado: com o circuito aberto, o retry não insiste.
+GET {{baseUrl}}/pagamentos/{{fora3.response.body.$.id}}
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+### O banco volta
+POST {{banco}}/config
+Content-Type: application/json
+
+{ "falhaPercent": 0 }
+
+### Espere 15 s e faça uma compra: o circuito vai a MEIO-ABERTO, testa e FECHA sozinho
+POST {{baseUrl}}/carrinho/itens
+Content-Type: application/json
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+{ "produto_id": "{{roupas.response.body.$[0].id}}", "quantidade": 1 }
+
+### Checkout depois dos 15 s
+# @name voltou
+POST {{baseUrl}}/pedidos
+Content-Type: application/json
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+{ "endereco_entrega": {{endereco}}, "forma_pagamento": "pix" }
+
+### Health: status "ok", "circuitoBancoCartao": "FECHADO"
+GET {{baseUrl}}/health/pagamentos
+
+### Pagamento: APROVADO
+GET {{baseUrl}}/pagamentos/{{voltou.response.body.$.id}}
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+
+########################################
+# C. BANCO LENTO: 3 s de resposta -> timeout
+########################################
+# O pagamentos desiste em 2 s. Mas o banco COBROU: só a resposta não chegou.
+# Timeout quer dizer "não sei o que aconteceu", então o pagamentos pede o estorno por segurança.
+# Rode este bloco pelo menos 30 s depois do bloco B: as falhas de lá ainda contam na janela do circuito.
+
+### Banco respondendo em 3 s
+POST {{banco}}/config
+Content-Type: application/json
+
+{ "latenciaMs": 3000 }
+
+### Carrinho
+POST {{baseUrl}}/carrinho/itens
+Content-Type: application/json
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+{ "produto_id": "{{roupas.response.body.$[0].id}}", "quantidade": 1 }
+
+### Checkout
+# @name lento
+POST {{baseUrl}}/pedidos
+Content-Type: application/json
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+{ "endereco_entrega": {{endereco}}, "forma_pagamento": "pix" }
+
+### Pagamento (espere ~10 s): ESTORNADO, motivo "estorno de segurança após banco indisponível (sem resposta em 2000 ms (timeout))"
+# No log do banco-falso: a cobrança aprovada, as REPETIDAS (sem cobrar de novo) e o ESTORNO.
+GET {{baseUrl}}/pagamentos/{{lento.response.body.$.id}}
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+### Pedido: CANCELADO
+GET {{baseUrl}}/pedidos/{{lento.response.body.$.id}}
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+
+########################################
+# VOLTA AO NORMAL
+########################################
+
+### Banco normal
+POST {{banco}}/config
+Content-Type: application/json
+
+{ "latenciaMs": 300, "falhaPercent": 0 }
+
+
+########################################
+# D. CACHE DA VITRINE (Redis): MISS, HIT e invalidação
+########################################
+# Veja o cabeçalho X-Cache em cada resposta: MISS (foi ao Mongo), HIT (veio do Redis) ou OFF (Redis fora).
+
+### Login do admin
+# @name loginAdmin
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{ "email": "admin@loja.com", "senha": "admin123" }
+
+### O admin cria um produto de demonstração em roupas (SKU único a cada execução): 201
+# @name demo
+POST {{baseUrl}}/produtos
+Content-Type: application/json
+Authorization: Bearer {{loginAdmin.response.body.$.token}}
+
+{ "sku": "DEMO-{{$timestamp}}", "nome": "Camiseta da demonstração", "categoria": "roupas", "preco": 99.9, "atributos": { "tamanho": "M", "tecido": "algodão" }, "estoque": { "disponivel": 5, "reservado": 0 } }
+
+### Vitrine de roupas: X-Cache MISS (a criação invalidou o cache)
+GET {{baseUrl}}/produtos?categoria=roupas
+
+### De novo: X-Cache HIT, com o preço 99.9
+GET {{baseUrl}}/produtos?categoria=roupas
+
+### O admin muda o preço para 79.9: 200 (faz INCR em catalogo:versao)
+PUT {{baseUrl}}/produtos/{{demo.response.body.$.id}}
+Content-Type: application/json
+Authorization: Bearer {{loginAdmin.response.body.$.token}}
+
+{ "sku": "{{demo.response.body.$.sku}}", "nome": "Camiseta da demonstração", "categoria": "roupas", "preco": 79.9, "atributos": { "tamanho": "M", "tecido": "algodão" }, "estoque": { "disponivel": 5, "reservado": 0 } }
+
+### O próximo GET já mostra 79.9: X-Cache MISS (versão nova)
+GET {{baseUrl}}/produtos?categoria=roupas
+
+### Por dentro do Redis (no terminal):
+#   docker compose exec redis redis-cli GET catalogo:versao
+#   docker compose exec redis redis-cli KEYS "catalogo:*"
+#   docker compose exec redis redis-cli TTL "<uma das chaves>"
+
+### REDIS FORA. No terminal:  docker compose stop redis
+### A vitrine continua respondendo: X-Cache OFF (direto do Mongo)
+GET {{baseUrl}}/produtos?categoria=roupas
+
+### Health do catálogo: status "degradado" (200), "cache": "fora do ar"
+GET {{baseUrl}}/health/catalogo
+
+### No terminal:  docker compose start redis   (em ~10 s o health volta a "ok")
+GET {{baseUrl}}/health/catalogo
+
+### Limpeza: desativa o produto de demonstração (204)
+DELETE {{baseUrl}}/produtos/{{demo.response.body.$.id}}
+Authorization: Bearer {{loginAdmin.response.body.$.token}}
+
+
+########################################
+# E. HEALTH: OK, DEGRADADO E FORA DO AR
+########################################
+
+### Banco do cartão fora: pagamentos fica "degradado" (200), não fora do ar
+# Rode o bloco B (falhaPercent 100 e duas compras) e depois:
+GET {{baseUrl}}/health/pagamentos
+
+### Banco do PRÓPRIO pagamentos fora. No terminal:  docker compose stop pagamentos-db
+### /health/pagamentos responde 503, status "fora do ar", "banco": "fora do ar"
+GET {{baseUrl}}/health/pagamentos
+
+### Em ~30 s, "docker compose ps" mostra pagamentos (unhealthy).
+### Volte com:  docker compose start pagamentos-db   (em ~10 s, healthy de novo)
+GET {{baseUrl}}/health/pagamentos
+
+### Seguir uma compra pelos logs (no terminal), com o X-Request-Id que o Kong devolveu no checkout:
+#   docker compose logs -t --no-log-prefix | grep <X-Request-Id> | sort

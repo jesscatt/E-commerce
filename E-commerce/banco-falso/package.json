@@ -1,0 +1,10 @@
+{
+  "name": "ecommerce-banco-falso",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Simulação do banco do cartão (sistema externo) para a saga de pagamentos",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  }
+}

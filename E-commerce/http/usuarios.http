@@ -1,0 +1,144 @@
+# Instale a extensão REST Client no VS Code.
+# Execute cada requisição em ordem pelo botão "Send Request".
+# Uma URL só: a do gateway. O serviço de usuários não tem mais porta publicada.
+@baseUrl = http://localhost:8080
+
+### 1. Healthcheck pelo gateway: 200
+GET {{baseUrl}}/health/usuarios
+
+### 2. Cadastro de usuário (público): 201
+# Na segunda vez que rodar, dá 409 (e-mail já cadastrado), que é o esperado.
+# @name novoUsuario
+POST {{baseUrl}}/usuarios
+Content-Type: application/json
+
+{
+  "nome": "Ana de Teste",
+  "email": "ana.teste@loja.com",
+  "senha": "segredo123"
+}
+
+### 3. Cadastro repetido: 409
+POST {{baseUrl}}/usuarios
+Content-Type: application/json
+
+{
+  "nome": "Ana de Teste",
+  "email": "ana.teste@loja.com",
+  "senha": "segredo123"
+}
+
+### 4. Cadastro inválido: 400
+POST {{baseUrl}}/usuarios
+Content-Type: application/json
+
+{ "nome": "X", "email": "invalido", "senha": "12" }
+
+### 5. Login do cliente seed: 200 { token, usuario }
+# @name loginCliente
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{ "email": "cliente@loja.com", "senha": "cliente123" }
+
+### 6. Login inválido: 401
+# Rate limit: a 11ª tentativa de login no mesmo minuto, do mesmo IP, recebe 429 do Kong.
+# Para ver o 429, clique em Send Request nesta requisição 11 vezes seguidas.
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{ "email": "cliente@loja.com", "senha": "senha-errada" }
+
+### 7. Meus dados: 200
+# O Kong valida o token e manda X-User-Id para o serviço.
+GET {{baseUrl}}/usuarios/me
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+### 8. Meus dados sem token: 401 (o Kong barra, o serviço nem fica sabendo)
+GET {{baseUrl}}/usuarios/me
+
+### 9. Token falso: 401
+GET {{baseUrl}}/usuarios/me
+Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJwZXJmaWwiOiJhZG1pbiJ9.assinatura-falsa
+
+### 10. Tentar se passar por outra pessoa com X-User-*: 401
+# O Kong apaga os X-User-* que vêm de fora e exige o token.
+GET {{baseUrl}}/usuarios/me
+X-User-Id: 00000000-0000-0000-0000-000000000000
+X-User-Email: hacker@loja.com
+X-User-Role: admin
+
+### 11. Atualizar meus dados: 200
+PUT {{baseUrl}}/usuarios/me
+Content-Type: application/json
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+{ "nome": "Cliente Atualizado", "email": "cliente@loja.com" }
+
+### 12. Atualização inválida: 400
+PUT {{baseUrl}}/usuarios/me
+Content-Type: application/json
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+{ "nome": "X", "email": "errado" }
+
+### 13. Endereços do cliente seed: 200 (pelo menos um endereço)
+GET {{baseUrl}}/usuarios/me/enderecos
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+### 14. Criar endereço: 201
+# @name criarEndereco
+POST {{baseUrl}}/usuarios/me/enderecos
+Content-Type: application/json
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+{
+  "apelido": "Trabalho",
+  "cep": "97000-001",
+  "logradouro": "Rua das Flores",
+  "numero": "25",
+  "complemento": "Sala 2",
+  "cidade": "Santa Maria",
+  "uf": "RS",
+  "principal": false
+}
+
+### 15. Endereço inválido: 400
+POST {{baseUrl}}/usuarios/me/enderecos
+Content-Type: application/json
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+{ "cep": "123", "logradouro": "", "cidade": "", "uf": "XXXY" }
+
+### 16. Excluir endereço criado: 204
+DELETE {{baseUrl}}/usuarios/me/enderecos/{{criarEndereco.response.body.$.id}}
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+### 17. Excluir endereço inexistente ou de outra pessoa: 404 (quem decide é o serviço)
+DELETE {{baseUrl}}/usuarios/me/enderecos/00000000-0000-0000-0000-000000000000
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+### 18. Listar usuários sem token: 401
+GET {{baseUrl}}/usuarios
+
+### 19. Tentar se passar por admin só com o cabeçalho: 401
+GET {{baseUrl}}/usuarios
+X-User-Role: admin
+
+### 20. Cliente tenta listar usuários: 403 (o acl do Kong barra)
+GET {{baseUrl}}/usuarios
+Authorization: Bearer {{loginCliente.response.body.$.token}}
+
+### 21. Login do admin seed: 200
+# @name loginAdmin
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{ "email": "admin@loja.com", "senha": "admin123" }
+
+### 22. Admin lista usuários: 200 (sem senha_hash)
+GET {{baseUrl}}/usuarios
+Authorization: Bearer {{loginAdmin.response.body.$.token}}
+
+### 23. Rota que não existe: 404 do próprio Kong
+GET {{baseUrl}}/rota-que-nao-existe

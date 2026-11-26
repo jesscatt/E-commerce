@@ -1,0 +1,212 @@
+# FLUXO COMPLETO: a saga inteira, do login ao PAGO, e os casos de erro.
+# Pré-requisito: docker compose up -d --build (num clone novo, sem nenhum passo a mais).
+# Instale a extensão REST Client no VS Code e clique em "Send Request" de cima para baixo.
+# Nada fixo aqui: o token e os ids vêm das respostas anteriores (# @name).
+# Se o carrinho tiver sobras de outro teste, elas entram no checkout da parte 1 (não atrapalha).
+@baseUrl = http://localhost:8080
+@banco = http://localhost:9000
+@endereco = { "cep": "97000-000", "logradouro": "Rua Exemplo", "numero": "100", "cidade": "Santa Maria", "uf": "RS" }
+
+########################################
+# 0. TUDO DE PÉ
+########################################
+
+### Saúde dos serviços pelo Kong: status "ok" (sem token)
+GET {{baseUrl}}/health/usuarios
+
+###
+GET {{baseUrl}}/health/catalogo
+
+###
+GET {{baseUrl}}/health/pedidos
+
+###
+GET {{baseUrl}}/health/pagamentos
+
+### Banco do cartão no normal (latência 300 ms, sem falhas)
+POST {{banco}}/config
+Content-Type: application/json
+
+{ "latenciaMs": 300, "falhaPercent": 0 }
+
+
+########################################
+# 1. A VENDA: login -> vitrine -> carrinho -> checkout -> PAGO
+########################################
+
+### 1.1 Login do cliente do seed: 200 { token, usuario }
+# @name login
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{ "email": "cliente@loja.com", "senha": "cliente123" }
+
+### 1.2 Vitrine: guarda o id do primeiro produto (cabeçalho X-Cache: MISS ou HIT)
+# @name vitrine
+GET {{baseUrl}}/produtos
+
+### 1.3 Vitrine de novo: X-Cache: HIT (veio do Redis, sem ir ao Mongo)
+GET {{baseUrl}}/produtos
+
+### 1.4 Estoque do produto ANTES da compra (anote "disponivel")
+GET {{baseUrl}}/produtos/{{vitrine.response.body.$[0].id}}
+
+### 1.5 Carrinho: 201
+POST {{baseUrl}}/carrinho/itens
+Content-Type: application/json
+Authorization: Bearer {{login.response.body.$.token}}
+
+{ "produto_id": "{{vitrine.response.body.$[0].id}}", "quantidade": 1 }
+
+### 1.6 Carrinho com o preço atual: 200 { itens, total }
+GET {{baseUrl}}/carrinho
+Authorization: Bearer {{login.response.body.$.token}}
+
+### 1.7 Checkout com pix: 202 (status AGUARDANDO_ESTOQUE)
+# @name compra
+POST {{baseUrl}}/pedidos
+Content-Type: application/json
+Authorization: Bearer {{login.response.body.$.token}}
+
+{ "endereco_entrega": {{endereco}}, "forma_pagamento": "pix" }
+
+### 1.8 O pedido: reenvie até "status": "PAGO" (leva ~1 s; passa por AGUARDANDO_PAGAMENTO)
+GET {{baseUrl}}/pedidos/{{compra.response.body.$.id}}
+Authorization: Bearer {{login.response.body.$.token}}
+
+### 1.9 O pagamento: APROVADO, com codigo_transacao TX-... e tentativas 1
+GET {{baseUrl}}/pagamentos/{{compra.response.body.$.id}}
+Authorization: Bearer {{login.response.body.$.token}}
+
+### 1.10 Estoque DEPOIS da venda: disponivel 1 a menos (o cache foi invalidado pela venda: X-Cache MISS)
+GET {{baseUrl}}/produtos/{{vitrine.response.body.$[0].id}}
+
+### 1.11 Meus pedidos: 200
+GET {{baseUrl}}/pedidos
+Authorization: Bearer {{login.response.body.$.token}}
+
+### 1.12 ERRO 409: cancelar um pedido PAGO não é permitido
+POST {{baseUrl}}/pedidos/{{compra.response.body.$.id}}/cancelar
+Authorization: Bearer {{login.response.body.$.token}}
+
+
+########################################
+# 2. CARTÃO RECUSADO (final 0002): CANCELADO e estoque de volta
+########################################
+
+### 2.1 Carrinho: 201
+POST {{baseUrl}}/carrinho/itens
+Content-Type: application/json
+Authorization: Bearer {{login.response.body.$.token}}
+
+{ "produto_id": "{{vitrine.response.body.$[0].id}}", "quantidade": 1 }
+
+### 2.2 Checkout com cartão final 0002: 202
+# @name recusada
+POST {{baseUrl}}/pedidos
+Content-Type: application/json
+Authorization: Bearer {{login.response.body.$.token}}
+
+{ "endereco_entrega": {{endereco}}, "forma_pagamento": "cartao", "numero_cartao": "4111 1111 1111 0002" }
+
+### 2.3 O pedido: CANCELADO, motivo_cancelamento "pagamento recusado: saldo insuficiente"
+GET {{baseUrl}}/pedidos/{{recusada.response.body.$.id}}
+Authorization: Bearer {{login.response.body.$.token}}
+
+### 2.4 O pagamento: RECUSADO, motivo "saldo insuficiente", tentativas 1 (402 não repete)
+GET {{baseUrl}}/pagamentos/{{recusada.response.body.$.id}}
+Authorization: Bearer {{login.response.body.$.token}}
+
+### 2.5 COMPENSAÇÃO: o estoque voltou ao valor do passo 1.10
+GET {{baseUrl}}/produtos/{{vitrine.response.body.$[0].id}}
+
+
+########################################
+# 3. CANCELAMENTO COM ESTORNO
+########################################
+# O banco passa a demorar 1,9 s (dentro do timeout de 2 s): dá tempo de cancelar enquanto ele cobra.
+# Clique no checkout (3.3) e LOGO EM SEGUIDA no cancelar (3.4).
+# Dois finais estão certos, e nenhum deixa o cliente pagando por um pedido cancelado:
+#   ESTORNADO: o banco cobrou e o pagamentos devolveu (o caso mais comum aqui);
+#   CANCELADO: o cancelamento chegou antes de a cobrança começar, e o banco nem foi chamado.
+# Se o 3.4 der 409, o pedido já tinha virado PAGO: rode de novo a partir do 3.2, clicando mais rápido.
+
+### 3.1 Banco lento, dentro do timeout
+POST {{banco}}/config
+Content-Type: application/json
+
+{ "latenciaMs": 1900 }
+
+### 3.2 Carrinho: 201
+POST {{baseUrl}}/carrinho/itens
+Content-Type: application/json
+Authorization: Bearer {{login.response.body.$.token}}
+
+{ "produto_id": "{{vitrine.response.body.$[0].id}}", "quantidade": 1 }
+
+### 3.3 Checkout com cartão: 202
+# @name cancelada
+POST {{baseUrl}}/pedidos
+Content-Type: application/json
+Authorization: Bearer {{login.response.body.$.token}}
+
+{ "endereco_entrega": {{endereco}}, "forma_pagamento": "cartao", "numero_cartao": "4111 1111 1111 1234" }
+
+### 3.4 Cancela LOGO EM SEGUIDA: 200 (publica pedido.cancelado)
+POST {{baseUrl}}/pedidos/{{cancelada.response.body.$.id}}/cancelar
+Authorization: Bearer {{login.response.body.$.token}}
+
+### 3.5 O pedido: CANCELADO, motivo "cancelado pelo cliente"
+GET {{baseUrl}}/pedidos/{{cancelada.response.body.$.id}}
+Authorization: Bearer {{login.response.body.$.token}}
+
+### 3.6 O pagamento (espere ~2 s): ESTORNADO, ou CANCELADO
+GET {{baseUrl}}/pagamentos/{{cancelada.response.body.$.id}}
+Authorization: Bearer {{login.response.body.$.token}}
+
+### 3.7 COMPENSAÇÃO: o estoque voltou
+GET {{baseUrl}}/produtos/{{vitrine.response.body.$[0].id}}
+
+### 3.8 Banco de volta ao normal
+POST {{banco}}/config
+Content-Type: application/json
+
+{ "latenciaMs": 300, "falhaPercent": 0 }
+
+
+########################################
+# 4. CLIENTE EM ROTA DE ADMIN (403) E SEM TOKEN (401)
+########################################
+
+### 4.1 ERRO 403: cliente listando todos os usuários (o acl do Kong barra)
+GET {{baseUrl}}/usuarios
+Authorization: Bearer {{login.response.body.$.token}}
+
+### 4.2 ERRO 403: cliente criando produto
+POST {{baseUrl}}/produtos
+Content-Type: application/json
+Authorization: Bearer {{login.response.body.$.token}}
+
+{ "sku": "NAO-PODE-1", "nome": "Cliente não pode", "categoria": "livros", "preco": 10 }
+
+### 4.3 ERRO 403: cliente listando todos os pagamentos
+GET {{baseUrl}}/pagamentos
+Authorization: Bearer {{login.response.body.$.token}}
+
+### 4.4 ERRO 401: pedidos sem token
+GET {{baseUrl}}/pedidos
+
+### 4.5 Login do admin do seed: 200
+# @name admin
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{ "email": "admin@loja.com", "senha": "admin123" }
+
+### 4.6 Admin lista os pagamentos: 200 (a venda, a recusa e o cancelamento acima)
+GET {{baseUrl}}/pagamentos
+Authorization: Bearer {{admin.response.body.$.token}}
+
+### 4.7 Admin lista os usuários: 200 (sem senha_hash)
+GET {{baseUrl}}/usuarios
+Authorization: Bearer {{admin.response.body.$.token}}

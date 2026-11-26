@@ -1,0 +1,17 @@
+{
+  "name": "ecommerce-pagamentos",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Microserviço de pagamentos (saga, timeout, retry e circuit breaker) - e-commerce de Arquitetura de Sistemas",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node scripts/bootstrap.js && node src/server.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "express": "4.21.2",
+    "kafkajs": "2.2.4",
+    "opossum": "^8.1.3",
+    "pg": "8.13.3"
+  }
+}
