@@ -38,10 +38,11 @@ test('entrega da aula: gateway e pedidos', async (t) => {
     return { ...dados, id: usuario.id };
   }
 
-  await t.test('três serviços e bancos respondem pelo gateway', async () => {
-    for (const servico of ['usuarios', 'catalogo', 'pedidos']) {
+  await t.test('quatro serviços e bancos respondem pelo gateway', async () => {
+    for (const servico of ['usuarios', 'catalogo', 'pedidos', 'pagamentos']) {
       const { dados, headers } = await requisitar(`/health/${servico}`, 200);
-      assert.equal(dados.banco, 'ok');
+      assert.equal(dados.status, 'ok');
+      assert.equal(dados.dependencias.banco, 'ok');
       assert.equal(dados.servico, servico);
       assert.ok(headers.get('x-request-id'));
     }
@@ -66,7 +67,8 @@ test('entrega da aula: gateway e pedidos', async (t) => {
   assert.ok(cliente && outro && admin, 'contas de teste precisam estar disponíveis');
   t.after(async () => {
     for (const id of pedidosCriados) {
-      await requisitar(`/pedidos/${id}/cancelar`, 200, { metodo: 'POST', token: cliente.token });
+      // Com a saga, o pedido pode já estar PAGO ou CANCELADO: aí o cancelamento é 409.
+      await requisitar(`/pedidos/${id}/cancelar`, [200, 409], { metodo: 'POST', token: cliente.token });
     }
     if (produto) {
       // A API não oferece exclusão de usuários nem exclusão física de produtos.
@@ -135,7 +137,9 @@ test('entrega da aula: gateway e pedidos', async (t) => {
     assert.equal(pedido.itens[0].preco_unitario, 19.9);
     assert.deepEqual((await requisitar('/carrinho', 200, { token: cliente.token })).dados, { itens: [], total: 0 });
     // Muda o preço atual e comprova que o pedido preserva o preço da compra.
-    await requisitar(`/produtos/${produto.id}`, 200, { metodo: 'PUT', token: admin.token, corpo: { ...produto, preco: 29.9 } });
+    // O PUT manda o estoque antigo (3), mas ele é ignorado: não pode apagar a reserva deste pedido.
+    const alterado = await requisitar(`/produtos/${produto.id}`, 200, { metodo: 'PUT', token: admin.token, corpo: { ...produto, preco: 29.9 } });
+    assert.equal(alterado.dados.preco, 29.9);
     const historico = await requisitar(`/pedidos/${pedido.id}`, 200, { token: cliente.token });
     assert.equal(historico.dados.valor_total, 39.8);
     assert.equal(historico.dados.itens[0].preco_unitario, 19.9);
