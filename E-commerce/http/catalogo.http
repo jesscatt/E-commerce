@@ -157,7 +157,7 @@ Authorization: Bearer {{loginAdmin.response.body.$.token}}
 
 { "sku": "XYZ-001", "nome": "Sem categoria válida", "categoria": "brinquedos", "preco": 10 }
 
-### Substitui o produto inteiro: 200
+### Substitui o produto: 200 (o estoque NÃO muda pelo PUT; para isso, use o PATCH /estoque abaixo)
 PUT {{baseUrl}}/produtos/{{criado.response.body.$.id}}
 Content-Type: application/json
 Authorization: Bearer {{loginAdmin.response.body.$.token}}
@@ -167,8 +167,7 @@ Authorization: Bearer {{loginAdmin.response.body.$.token}}
   "nome": "Domain-Driven Design (capa dura)",
   "categoria": "livros",
   "preco": 189.9,
-  "atributos": { "autor": "Eric Evans", "paginas": 528, "capa": "dura" },
-  "estoque": { "disponivel": 7, "reservado": 0 }
+  "atributos": { "autor": "Eric Evans", "paginas": 528, "capa": "dura" }
 }
 
 ### ERRO 400: PUT incompleto
