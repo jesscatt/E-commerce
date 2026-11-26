@@ -1,0 +1,98 @@
+name: Teste completo
+
+# Roda o projeto inteiro numa maquina do GitHub (com Docker) e faz uma compra de verdade.
+# Disparo manual: aba Actions -> "Teste completo" -> Run workflow.
+on:
+  workflow_dispatch:
+
+jobs:
+  teste:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Baixar o codigo
+        uses: actions/checkout@v4
+
+      - name: Achar a pasta do docker-compose.yml
+        run: |
+          ARQ=$(find . -name docker-compose.yml -not -path '*/node_modules/*' | head -1)
+          test -n "$ARQ" || { echo "docker-compose.yml nao encontrado"; exit 1; }
+          echo "PASTA=$(dirname "$ARQ")" >> "$GITHUB_ENV"
+          echo "Projeto em: $(dirname "$ARQ")"
+
+      - name: 1. Testes automaticos (sem Docker)
+        working-directory: ${{ env.PASTA }}
+        run: node --test pagamentos/test/banco.test.js catalogo/test/cache.test.js pedidos/test/regras.test.js usuarios/test/validacao.test.js
+
+      - name: 2. Subir os 16 containers
+        working-directory: ${{ env.PASTA }}
+        run: |
+          docker compose up -d --build
+          for i in $(seq 1 120); do
+            if curl -sf http://localhost:8080/health/pedidos > /dev/null; then echo "Kong respondendo"; break; fi
+            sleep 5
+          done
+          docker compose ps
+
+      - name: 3. Health de todos os servicos
+        run: |
+          for s in usuarios catalogo pedidos pagamentos; do
+            echo "$s: $(curl -s http://localhost:8080/health/$s)"
+            curl -s http://localhost:8080/health/$s | jq -e '.status == "ok"' > /dev/null
+          done
+
+      - name: 4. Compra com pix tem que chegar a PAGO
+        run: |
+          B=http://localhost:8080
+          TOKEN=$(curl -s -X POST $B/auth/login -H 'Content-Type: application/json' \
+            -d '{"email":"cliente@loja.com","senha":"cliente123"}' | jq -r .token)
+          test "$TOKEN" != "null" || { echo "login falhou"; exit 1; }
+          PROD=$(curl -s $B/produtos | jq -r '.[0].id')
+          echo "produto: $PROD"
+          curl -s -X POST $B/carrinho/itens -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+            -d "{\"produto_id\":\"$PROD\",\"quantidade\":1}"; echo
+          PED=$(curl -s -X POST $B/pedidos -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+            -d '{"endereco_entrega":{"cep":"97000-000","logradouro":"Rua Exemplo","numero":"100","cidade":"Santa Maria","uf":"RS"},"forma_pagamento":"pix"}' | jq -r .id)
+          echo "pedido: $PED"
+          for i in $(seq 1 20); do
+            ST=$(curl -s $B/pedidos/$PED -H "Authorization: Bearer $TOKEN" | jq -r .status)
+            echo "pedido: $ST"
+            [ "$ST" = "PAGO" ] && break
+            sleep 1
+          done
+          PAG=$(curl -s $B/pagamentos/$PED -H "Authorization: Bearer $TOKEN" | jq -r .status)
+          echo "pagamento: $PAG"
+          [ "$ST" = "PAGO" ] && [ "$PAG" = "APROVADO" ]
+
+      - name: 5. Cartao final 0002 tem que ser CANCELADO
+        run: |
+          B=http://localhost:8080
+          TOKEN=$(curl -s -X POST $B/auth/login -H 'Content-Type: application/json' \
+            -d '{"email":"cliente@loja.com","senha":"cliente123"}' | jq -r .token)
+          PROD=$(curl -s $B/produtos | jq -r '.[0].id')
+          curl -s -X POST $B/carrinho/itens -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+            -d "{\"produto_id\":\"$PROD\",\"quantidade\":1}" > /dev/null
+          PED=$(curl -s -X POST $B/pedidos -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+            -d '{"endereco_entrega":{"cep":"97000-000","logradouro":"Rua Exemplo","numero":"100","cidade":"Santa Maria","uf":"RS"},"forma_pagamento":"cartao","numero_cartao":"4111 1111 1111 0002"}' | jq -r .id)
+          for i in $(seq 1 20); do
+            ST=$(curl -s $B/pedidos/$PED -H "Authorization: Bearer $TOKEN" | jq -r .status)
+            echo "pedido: $ST"
+            [ "$ST" = "CANCELADO" ] && break
+            sleep 1
+          done
+          PAG=$(curl -s $B/pagamentos/$PED -H "Authorization: Bearer $TOKEN" | jq -r .status)
+          echo "pagamento: $PAG"
+          [ "$ST" = "CANCELADO" ] && [ "$PAG" = "RECUSADO" ]
+
+      - name: 6. Teste de integracao pelo gateway
+        working-directory: ${{ env.PASTA }}
+        run: |
+          sleep 65   # o login aceita 10 por minuto; espera a janela zerar
+          TEST_BASE_URL=http://localhost:8080 node --test test/gateway-pedidos.test.js
+
+      - name: Se falhou, mostrar o estado e os logs
+        if: failure()
+        working-directory: ${{ env.PASTA }}
+        run: |
+          docker compose ps -a
+          docker compose logs --tail 60
